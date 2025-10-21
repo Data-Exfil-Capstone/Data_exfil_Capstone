@@ -1,0 +1,46 @@
+# Vagrantfile - 3 VMs: client (attacker), server (victim), monitor (sensor)
+Vagrant.configure("2") do |config|
+    config.vm.box = "ubuntu/focal64"
+  
+    # Host-only network base
+    network_base = "192.168.56."
+  
+    # Client VM (will generate traffic)
+    config.vm.define "client" do |c|
+      c.vm.hostname = "client"
+      c.vm.network "private_network", ip: "#{network_base}10"
+      c.vm.provider "virtualbox" do |vb|
+        vb.memory = 1024
+        vb.cpus = 1
+      end
+      c.vm.provision "shell", path: "provision.sh", args: "client"
+    end
+  
+    # Server VM (responds to traffic)
+    config.vm.define "server" do |s|
+      s.vm.hostname = "server"
+      s.vm.network "private_network", ip: "#{network_base}11"
+      s.vm.provider "virtualbox" do |vb|
+        vb.memory = 1024
+        vb.cpus = 1
+      end
+      s.vm.provision "shell", path: "provision.sh", args: "server"
+    end
+  
+    # Monitor VM (Zeek / capture)
+    config.vm.define "monitor" do |m|
+      m.vm.hostname = "monitor"
+      m.vm.network "private_network", ip: "#{network_base}12"
+      m.vm.provider "virtualbox" do |vb|
+        vb.memory = 2048
+        vb.cpus = 2
+      end
+      m.vm.provision "shell", path: "provision.sh", args: "monitor"
+    end
+  
+    # Provider tweaks
+    config.vm.provider "virtualbox" do |vb|
+      vb.customize ["modifyvm", :id, "--natdnshostresolver1", "off"]
+    end
+  end
+  

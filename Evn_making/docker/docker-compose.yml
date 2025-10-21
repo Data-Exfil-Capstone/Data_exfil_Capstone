@@ -1,0 +1,39 @@
+version: '3.8'
+services:
+  server:
+    image: python:3.10-slim
+    container_name: server
+    command: >
+      bash -c "python -m http.server 8080"
+    networks:
+      labnet:
+        ipv4_address: 172.28.0.11
+
+  client:
+    image: python:3.10-slim
+    container_name: client
+    networks:
+      labnet:
+        ipv4_address: 172.28.0.12
+    volumes:
+      - ./traffic_gen.py:/traffic_gen.py
+    command: ["sleep", "infinity"]
+
+  monitor:
+    image: corfr/tshark
+    container_name: monitor
+    networks:
+      labnet:
+        ipv4_address: 172.28.0.13
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - ./captures:/captures
+    command: ["sleep", "infinity"]
+
+networks:
+  labnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
