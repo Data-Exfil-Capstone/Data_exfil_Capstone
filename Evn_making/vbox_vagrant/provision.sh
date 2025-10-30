@@ -2,43 +2,31 @@
 ROLE="$1"
 set -e
 
-# Ensure home directory exists
-if [ ! -d /home/vagrant ]; then
-  mkdir -p /home/vagrant
-  useradd -m vagrant || true
+# Update and install base packages
+sudo apt-get update -y
+sudo apt-get install -y python3 python3-pip tcpdump tshark git vim apache2
+
+# Install Zeek (only on monitor node)
+if [ "$ROLE" = "monitor" ]; then
+    sudo apt-get install -y zeek
+    sudo mkdir -p /opt/captures
+    sudo chown vagrant:vagrant /opt/captures
 fi
-chown -R vagrant:vagrant /home/vagrant
 
-# update
-sudo  dnf update -y
-sudo dnf install -y python3 python3-pip tcpdump tshark git vim
+# Ensure Apache is enabled for the server
+if [ "$ROLE" = "server" ]; then
+    sudo systemctl enable apache2
+    sudo systemctl start apache2
+    echo "<html><body>server</body></html>" | sudo tee /var/www/html/index.html
+fi
 
-# common python deps
+# Install Python packages (common to all)
 sudo pip3 install scapy pandas
 
-if [ "$ROLE" = "server" ]; then
-  # small HTTP server
-  sudo dnf install -y apache2
-  sudo systemctl enable apache2
-  sudo systemctl start apache2
-  echo "<html><body>server</body></html>" | sudo tee /var/www/html/index.html
-fi
-
-if [ "$ROLE" = "monitor" ]; then
-  # Install Zeek (Debian/Ubuntu quick install)
-  # Use zeek package from package. This is a simple installer; adapt if you need newest version.
-  sudo dnf install -y cmake make gcc g++ flex bison libpcap-dev libssl-dev python3-dev zlib1g-dev
-  # quick install via apt (older but fine for capture)
-  sudo dnf install -y zeek
-  # create capture dir
-  sudo mkdir -p /opt/captures
-  sudo chown vagrant:vagrant /opt/captures
-fi
-
-# place traffic generator
+# Create traffic generator script on client
+if [ "$ROLE" = "client" ]; then
 cat > /home/vagrant/traffic_gen.py <<'PY'
 #!/usr/bin/env python3
-# Simple scapy traffic generator: HTTP GET bursts + random TCP flows
 from scapy.all import *
 import sys, time, random
 
@@ -50,11 +38,10 @@ def http_get(target_ip, target_port=80, n=10, interval=0.2):
         if syn is None:
             time.sleep(interval)
             continue
-        ack = TCP(dport=target_port, sport=syn.sport, flags="A", seq=syn.ack, ack=syn.seq+1)
+        ack = TCP(dport=target_port, sport=tcp.sport, flags="A", seq=syn.ack, ack=syn.seq+1)
         send(ip/ack, verbose=0)
-        # send a simple GET as raw payload
         payload = "GET / HTTP/1.1\r\nHost: {}\r\nUser-Agent: traffic-gen\r\n\r\n".format(target_ip)
-        send(ip/TCP(dport=target_port, sport=syn.sport, flags="PA")/payload, verbose=0)
+        send(ip/TCP(dport=target_port, sport=tcp.sport, flags="PA")/payload, verbose=0)
         time.sleep(interval)
 
 def random_tcp_flood(target_ip, target_port=4444, n=50, interval=0.05):
@@ -79,7 +66,8 @@ if __name__ == '__main__':
         print("Unknown mode")
 PY
 
-chmod +x /home/vagrant/traffic_gen.py
-chown vagrant:vagrant /home/vagrant/traffic_gen.py
+sudo chmod +x /home/vagrant/traffic_gen.py
+sudo chown vagrant:vagrant /home/vagrant/traffic_gen.py
+fi
 
-echo "Provision complete for role: $ROLE"
+echo "[+] Provision complete for role: $ROLE"
