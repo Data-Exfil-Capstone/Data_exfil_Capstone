@@ -308,7 +308,8 @@ class PCAPAutoencoder:
     def load_model(self, model_name):
         """Load a trained model and scaler from the models directory."""
         path_prefix = os.path.join(MODELS_DIR, model_name)
-        self.autoencoder = keras.models.load_model(f"{path_prefix}_autoencoder.h5")
+        self.autoencoder = keras.models.load_model(f"{path_prefix}_autoencoder.h5", compile=False)
+        self.autoencoder.compile(optimizer='adam', loss='mse')
         with open(f"{path_prefix}_scaler.pkl", 'rb') as f:
             self.scaler = pickle.load(f)
         with open(f"{path_prefix}_config.pkl", 'rb') as f:
