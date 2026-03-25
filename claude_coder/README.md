@@ -5,6 +5,7 @@ A machine learning system for detecting anomalous network traffic and data exfil
 | Pipeline | Input | Anomaly unit | Status |
 |---|---|---|---|
 | **FlowMAE** | `.pcap` | Per flow | **Active** |
+| **PayloadMAE** | `.pcap` (decrypted) | Per flow | **Active** |
 | PCAP Autoencoder | `.pcap` | Per packet | Legacy (`legacy/`) |
 | CSV Autoencoder | `.csv` | Per packet | Legacy (`legacy/`) |
 
@@ -202,6 +203,90 @@ A normal autoencoder asks: *"does this packet look weird?"*
 FlowMAE asks: *"does this conversation look weird?"*
 
 For data exfiltration, the conversation is almost always what's suspicious — not any single packet in isolation.
+
+---
+
+## PayloadMAE
+
+An extension of FlowMAE that adds **payload content features** to each packet's feature vector. Requires decrypted PCAPs — if your traffic is TLS-encrypted, pre-decrypt it first:
+
+```bash
+tshark -r encrypted.pcap -o tls.keylog_file:keys.log -w decrypted.pcap
+```
+
+### Why payload features matter
+
+FlowMAE sees *how* traffic flows (timing, size, direction). PayloadMAE also sees *what* is inside each packet. This closes a gap: an attacker who mimics normal flow metadata (correct timing, normal-looking packet sizes) but is still sending unusual byte patterns will evade FlowMAE but not PayloadMAE.
+
+### Features per packet (14 total)
+
+The original 8 metadata features plus 6 payload statistics:
+
+| Feature | Description |
+|---|---|
+| `payload_entropy` | Shannon entropy of payload bytes (0–8 bits). High entropy = encrypted/compressed/random data |
+| `byte_mean` | Mean byte value (0–255). Base64 clusters near 80; binary data spreads differently |
+| `byte_std` | Std deviation of byte values. Low = repetitive/structured; high = random |
+| `printable_ratio` | Fraction of bytes in printable ASCII range (0x20–0x7e). Low = binary blob |
+| `high_byte_ratio` | Fraction of bytes > 127. High = non-ASCII / binary payload |
+| `unique_byte_ratio` | Fraction of all 256 possible byte values present. Encrypted data uses nearly all 256 |
+
+### What PayloadMAE catches that FlowMAE misses
+
+| Pattern | FlowMAE | PayloadMAE |
+|---|---|---|
+| Exfil disguised as normal-sized, normal-timed packets | Misses — metadata looks clean | Catches — payload entropy/content is unusual |
+| Base64-encoded data in HTTP bodies | Misses | Catches — byte mean and printable ratio shift |
+| Binary blobs sent over plain HTTP | May miss | Catches — high_byte_ratio and entropy spike |
+| Plaintext credential dumps | Misses | Catches — printable ratio near 1.0 in an unusual flow |
+| Encrypted C2 over mimicked-normal flow timing | Misses | Catches — near-uniform byte distribution |
+
+### Architecture
+
+Identical to FlowMAE — same Transformer MAE — but the input/output dimension is 14 instead of 8.
+
+```
+PCAP → group by 5-tuple → 32-packet windows × 14 features
+     → linear projection → 32-dim
+     → positional encoding
+     → 2× Transformer encoder blocks (4 heads, FF=64)
+     → Dense(14) reconstruction
+     → MSE loss on masked (40%) positions only
+```
+
+### Create a new model
+
+```bash
+python payload_create_model_script.py decrypted_benign.pcap my_payload_model
+```
+
+### Continue training
+
+```bash
+python payload_train_model_script.py my_payload_model more_benign_decrypted.pcap [--output-name new_name]
+```
+
+### Test / detect
+
+```bash
+python payload_test_model_script.py my_payload_model suspect_decrypted.pcap [--verbose] [--plot] [--save-results out.json]
+```
+
+### Test results
+
+See `payload_results.md` for results of the model tested against clean and dirty decrypted PCAPs.
+
+---
+
+## FlowMAE vs PayloadMAE — when to use which
+
+| Scenario | Recommended |
+|---|---|
+| Traffic is still encrypted (no TLS keys) | FlowMAE only |
+| Traffic is decrypted / plaintext | Both — run in parallel |
+| Attacker is mimicking normal timing/sizes | PayloadMAE catches it |
+| Attacker is using unusual flow patterns | FlowMAE catches it |
+| Maximum detection coverage | Run both, flag if either fires |
 
 ---
 

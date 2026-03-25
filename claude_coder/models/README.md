@@ -155,6 +155,60 @@ patterns (beaconing, slow-drip, directional asymmetry, DNS tunnelling).
 
 ---
 
+---
+
+## PayloadMAE Models (PCAP-based, flow-sequence + payload content)
+
+PayloadMAE extends FlowMAE by adding 6 payload byte statistics to each packet's
+feature vector (14 features total instead of 8). Requires decrypted PCAPs.
+
+**File structure:**
+
+| File | Contents |
+|------|----------|
+| `<name>_payloadmae.weights.h5` | Trained Keras PayloadMAE weights |
+| `<name>_payloadmae_config.pkl` | Threshold, scaler, and hyperparameters |
+
+**Architecture:**
+
+- Same Transformer MAE as FlowMAE
+- Input/output dimension: 14 (8 metadata + 6 payload statistics)
+- Packets grouped by 5-tuple, split into 32-packet windows
+- Training: MSE on masked (40%) positions only
+- Threshold: 99th percentile of per-window scores on training data
+
+**Payload features (6 additional per packet):**
+
+| Feature | Description |
+|---------|-------------|
+| `payload_entropy` | Shannon entropy (0–8 bits) of raw payload bytes |
+| `byte_mean` | Mean byte value (0–255) |
+| `byte_std` | Std deviation of byte values |
+| `printable_ratio` | Fraction of bytes in printable ASCII range 0x20–0x7e |
+| `high_byte_ratio` | Fraction of bytes > 127 |
+| `unique_byte_ratio` | Fraction of all 256 byte values present in payload |
+
+---
+
+### `payload_clean_tcp_withssl`
+
+- **Type:** PayloadMAE (`payload_mae_lib.py`)
+- **Training PCAP:** `clean_decrypted_tcp_withssl.pcap`
+- **Training data:** *(run `payload_create_model_script.py` to populate)*
+- **Anomaly threshold:** *(set at training time — 99th pct of training windows)*
+- **What it learned:** Normal payload byte patterns in mixed TCP+SSL/TLS decrypted
+  traffic — typical entropy levels for web content, expected printable ratios for
+  HTTP responses, byte distributions of normal application data.
+- **Recommended use:** Companion to `flow_clean_tcp_withssl`. Run both models
+  in parallel for maximum coverage. PayloadMAE catches attackers who successfully
+  mimic normal flow timing/sizing but whose payload byte patterns remain unusual.
+- **Test with:**
+  ```bash
+  python payload_test_model_script.py payload_clean_tcp_withssl <decrypted_test.pcap> --verbose --plot
+  ```
+
+---
+
 ## Usage Reference
 
 ```bash
@@ -180,4 +234,17 @@ python flow_train_model_script.py <model_name> <more_benign.pcap> [--output-name
 
 # Test a FlowMAE against a PCAP — reports anomalous flows by 5-tuple
 python flow_test_model_script.py <model_name> <test.pcap> [--verbose] [--plot] [--save-results out.json]
+
+# ── PayloadMAE (decrypted PCAP → flow sequences + payload content) ────────
+# Pre-decrypt with tshark if needed:
+#   tshark -r encrypted.pcap -o tls.keylog_file:keys.log -w decrypted.pcap
+
+# Create a new PayloadMAE model from a decrypted benign PCAP
+python payload_create_model_script.py <decrypted_benign.pcap> <model_name> [--epochs 30] [--batch-size 32]
+
+# Continue training a PayloadMAE with additional decrypted benign data
+python payload_train_model_script.py <model_name> <more_decrypted.pcap> [--output-name new_name]
+
+# Test a PayloadMAE against a decrypted PCAP — reports anomalous flows by 5-tuple
+python payload_test_model_script.py <model_name> <decrypted_test.pcap> [--verbose] [--plot] [--save-results out.json]
 ```
