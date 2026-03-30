@@ -529,6 +529,161 @@ class FlowMAE:
             print(f"Plot saved to {save_path}")
         plt.show()
 
+    # ── Heatmap ───────────────────────────────────────────────────────────────
+
+    def _per_feature_errors(self, X: np.ndarray, n_masks: int = 10) -> np.ndarray:
+        """
+        Compute per-packet, per-feature reconstruction error for a set of windows.
+
+        Args:
+            X        : (N_windows, L, F) standardised float32
+            n_masks  : number of independent random masks to average over
+
+        Returns:
+            errors : (N_windows * L, F) float32 — squared error per position per feature,
+                     averaged across n_masks trials.
+        """
+        N, L, F   = X.shape
+        total_err = np.zeros((N, L, F), dtype=np.float64)
+
+        for _ in range(n_masks):
+            x_m, _ = self._mask(X, self.MASK_RATIO)
+            recon   = self.model(x_m, training=False).numpy()   # (N, L, F)
+            total_err += (X - recon) ** 2
+
+        avg_err = (total_err / n_masks).astype(np.float32)     # (N, L, F)
+        return avg_err.reshape(N * L, F)                        # (N*L, F)
+
+    def plot_feature_heatmap(self, pcap_file: str, results: dict,
+                             top_n: int = 3, save_path: str = None):
+        """
+        Plot a per-feature reconstruction-error heatmap for the most anomalous flows.
+
+        Layout
+        ──────
+        X-axis : packet index (time proxy — left = earliest packet)
+        Y-axis : feature names (one row per feature)
+        Colour : % reconstruction error, normalised per feature across ALL packets
+                 in the selected flows so rows are directly comparable.
+                 0 % = perfectly reconstructed  |  100 % = worst error seen
+
+        Args:
+            pcap_file : path to the same PCAP used with detect_anomalies()
+            results   : dict returned by detect_anomalies()
+            top_n     : number of most-anomalous flows to include (default 3)
+            save_path : if given, save the figure to this path
+        """
+        if self.model is None:
+            raise ValueError("No model loaded.")
+
+        # ── identify top-N anomalous flows ────────────────────────────────────
+        sorted_flows = sorted(
+            results['flow_details'].items(),
+            key=lambda kv: kv[1]['score'],
+            reverse=True,
+        )
+        top_keys = [k for k, v in sorted_flows[:top_n] if v['anomalous']]
+        if not top_keys:
+            print("No anomalous flows to plot.")
+            return
+
+        # ── re-extract only the flows we need ─────────────────────────────────
+        all_flows  = self.extract_flows(pcap_file)
+        # match top_keys (strings) back to tuple keys
+        key_lookup = {_key_to_str(k): k for k in all_flows}
+        target_flows = {
+            key_lookup[ks]: all_flows[key_lookup[ks]]
+            for ks in top_keys
+            if ks in key_lookup
+        }
+
+        if not target_flows:
+            print("Could not match anomalous flow keys back to raw flows.")
+            return
+
+        X_raw, wkeys = self._flows_to_windows(target_flows)
+        N, L, F      = X_raw.shape
+        X = self.scaler.transform(
+            X_raw.reshape(-1, F)
+        ).reshape(N, L, F).astype(np.float32)
+
+        # ── compute per-packet, per-feature errors ────────────────────────────
+        print(f"  Computing per-feature errors for {N} windows ({N * L} packets) ...")
+        errors = self._per_feature_errors(X)               # (N*L, F)
+
+        # Normalise each feature column to [0, 100 %]
+        col_max    = errors.max(axis=0, keepdims=True) + 1e-8
+        pct_errors = (errors / col_max * 100).T             # (F, N*L) for imshow
+
+        # ── flow boundary positions ────────────────────────────────────────────
+        # mark where each new flow starts (in packet index space)
+        boundary_packets = []
+        label_positions  = []
+        label_texts      = []
+        pos = 0
+        prev_key = None
+        for wkey in wkeys:
+            ks = _key_to_str(wkey)
+            if ks != prev_key:
+                if pos > 0:
+                    boundary_packets.append(pos * L)
+                label_positions.append(pos * L + L // 2)
+                label_texts.append(ks)
+                prev_key = ks
+            pos += 1
+
+        # ── plot ──────────────────────────────────────────────────────────────
+        n_packets = pct_errors.shape[1]
+        fig_w     = max(14, n_packets // 8)
+        fig, ax   = plt.subplots(figsize=(fig_w, 4))
+
+        im = ax.imshow(
+            pct_errors,
+            aspect='auto',
+            cmap='YlOrRd',
+            vmin=0, vmax=100,
+            interpolation='nearest',
+        )
+
+        # Colour bar
+        cbar = fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02)
+        cbar.set_label('% reconstruction error\n(per feature, normalised to worst seen)',
+                       fontsize=8)
+
+        # Feature labels on Y-axis
+        ax.set_yticks(range(F))
+        ax.set_yticklabels(FLOW_FEATURES, fontsize=8)
+
+        # Flow boundary lines
+        for bp in boundary_packets:
+            ax.axvline(x=bp - 0.5, color='white', linewidth=1.5, linestyle='--', alpha=0.8)
+
+        # Flow key annotations along top
+        ax2 = ax.twiny()
+        ax2.set_xlim(ax.get_xlim())
+        ax2.set_xticks(label_positions)
+        ax2.set_xticklabels(
+            [f"Flow {i+1}" for i in range(len(label_positions))],
+            fontsize=7, rotation=15, ha='left'
+        )
+        ax2.tick_params(length=0)
+
+        ax.set_xlabel('Packet index (time →)', fontsize=9)
+        ax.set_ylabel('Feature', fontsize=9)
+        ax.set_title(
+            f'Feature Reconstruction Error Heatmap — top {len(top_keys)} anomalous flow(s)\n'
+            f'Threshold: {results["threshold"]:.4f}  |  '
+            f'{results["anomalous_flows"]}/{results["total_flows"]} flows flagged',
+            fontsize=9
+        )
+
+        plt.tight_layout()
+
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"  Heatmap saved to {save_path}")
+        plt.show()
+
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def save_model(self, name: str):

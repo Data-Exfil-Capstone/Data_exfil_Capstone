@@ -14,6 +14,8 @@ Examples:
     python flow_test_model_script.py baseline_model suspect.pcap
     python flow_test_model_script.py baseline_model suspect.pcap --verbose --plot
     python flow_test_model_script.py baseline_model suspect.pcap --threshold 0.05 --save-results out.json
+    python flow_test_model_script.py baseline_model suspect.pcap --heatmap
+    python flow_test_model_script.py baseline_model suspect.pcap --heatmap --heatmap-top-n 5 --save-heatmap heatmap.png
 """
 
 import argparse
@@ -64,6 +66,23 @@ def main():
         '--verbose',
         action='store_true',
         help='Print score for every detected anomalous flow'
+    )
+    parser.add_argument(
+        '--heatmap',
+        action='store_true',
+        help='Display per-feature reconstruction error heatmap for top anomalous flows'
+    )
+    parser.add_argument(
+        '--heatmap-top-n',
+        type=int,
+        default=3,
+        metavar='N',
+        help='Number of most-anomalous flows to include in heatmap (default: 3)'
+    )
+    parser.add_argument(
+        '--save-heatmap',
+        metavar='PATH',
+        help='Save the heatmap to this path (e.g. heatmap.png)'
     )
 
     args = parser.parse_args()
@@ -138,10 +157,20 @@ def main():
                 json.dump(results, f, indent=2)
             print(f"\n  Results saved to: {args.save_results}")
 
-        # ── Plot ──────────────────────────────────────────────────────────────
+        # ── Score bar chart ───────────────────────────────────────────────────
         if args.plot or args.save_plot:
-            print("\n  Generating plot ...")
+            print("\n  Generating score plot ...")
             detector.plot_flow_scores(results, save_path=args.save_plot)
+
+        # ── Feature heatmap ───────────────────────────────────────────────────
+        if args.heatmap or args.save_heatmap:
+            print(f"\n  Generating feature heatmap (top {args.heatmap_top_n} anomalous flows) ...")
+            detector.plot_feature_heatmap(
+                args.pcap_file,
+                results,
+                top_n=args.heatmap_top_n,
+                save_path=args.save_heatmap,
+            )
 
         print("\n" + "=" * 70)
         print("Analysis complete.")
