@@ -411,9 +411,15 @@ class FlowMAE:
         print(f"\nContinuing training ({epochs} epochs, batch={batch_size}) ...")
         self._run_epochs(X, epochs, batch_size)
 
+        old_threshold  = self.threshold
         scores         = self._score_windows(X)
-        self.threshold = float(np.percentile(scores, 99))
-        print(f"\nUpdated threshold: {self.threshold:.6f}")
+        new_threshold  = float(np.percentile(scores, 99))
+        # Never raise the threshold — only lower it if new data scores tighter
+        self.threshold = min(old_threshold, new_threshold)
+        print(f"\nOld threshold : {old_threshold:.6f}")
+        print(f"New candidate : {new_threshold:.6f}")
+        print(f"Updated threshold: {self.threshold:.6f}"
+              + (" (kept original — new data scored higher)" if self.threshold == old_threshold else ""))
 
     # ── Scoring / detection ───────────────────────────────────────────────────
 
